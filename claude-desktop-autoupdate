@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# claude-desktop-autoupdate — controlla se Anthropic ha pubblicato una nuova
+# versione di Claude Desktop e, se sì, la ricostruisce come RPM e la installa.
+#
+# Il download, la verifica della firma e la costruzione dell'RPM girano come
+# utente "nobody" (senza privilegi). Solo il "dnf install" finale gira come root.
+#
+# Uso:  sudo claude-desktop-autoupdate           aggiorna se serve
+#       sudo claude-desktop-autoupdate --check   dice solo se c'è un aggiornamento
+#       sudo claude-desktop-autoupdate --force   ricostruisce e reinstalla comunque
+#
+set -euo pipefail
+
+BUILDER=/usr/local/libexec/claude-desktop/build-official.sh
+
+CHECK_ONLY=0
+FORCE=0
+case "${1:-}" in
+    "")        ;;
+    --check)   CHECK_ONLY=1 ;;
+    --force)   FORCE=1 ;;
+    -h|--help) sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)         echo "opzione sconosciuta: $1 (prova --help)" >&2; exit 1 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "va eseguito come root (sudo)" >&2; exit 1; }
+[ -x "$BUILDER" ]    || { echo "manca $BUILDER: rilancia install.sh" >&2; exit 1; }
+
+WORK="$(mktemp -d -p /var/tmp claude-update.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+chown nobody:nobody "$WORK"
+chmod 700 "$WORK"
+
+# Esegue un comando come utente "nobody", con la cartella di lavoro come home.
+asuser() {
+    setpriv --reuid=nobody --regid=nobody --clear-groups -- \
+        env HOME="$WORK" TMPDIR="$WORK" PATH=/usr/bin:/bin LC_ALL=C.UTF-8 "$@"
+}
+
+# Legge l'indice firmato di Anthropic (verifica firma inclusa) senza scaricare l'app.
+latest="$(asuser "$BUILDER" --print-latest)"
+read -r ver sha _ <<<"$latest"
+[ -n "${sha:-}" ] || { echo "risposta inattesa dall'indice: $latest" >&2; exit 1; }
+ver="${ver//-/.}"
+
+inst=""
+if rpm -q claude-desktop >/dev/null 2>&1; then
+    inst="$(rpm -q --qf '%{VERSION}' claude-desktop)"
+fi
+
+if [ "$inst" = "$ver" ] && [ "$FORCE" -eq 0 ]; then
+    echo "già aggiornato ($inst)"
+    exit 0
+fi
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    echo "aggiornamento disponibile: ${inst:-non installato} -> $ver"
+    exit 2
+fi
+
+echo "aggiorno: ${inst:-non installato} -> $ver"
+asuser "$BUILDER" --outdir "$WORK/out" --expect-sha256 "$sha"
+
+rpm_file="$(find "$WORK/out" -maxdepth 1 -name 'claude-desktop-*.rpm' -print -quit)"
+[ -n "$rpm_file" ] || { echo "nessun RPM prodotto" >&2; exit 1; }
+
+nevra="$(rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}' "$rpm_file")"
+if rpm -q "$nevra" >/dev/null 2>&1; then
+    dnf reinstall -y "$rpm_file"
+else
+    dnf install -y "$rpm_file"
+fi
+echo "claude-desktop $(rpm -q --qf '%{VERSION}' claude-desktop) installato"

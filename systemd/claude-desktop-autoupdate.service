@@ -1,0 +1,11 @@
+[Unit]
+Description=Aggiorna Claude Desktop dal build ufficiale Anthropic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/claude-desktop-autoupdate
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=3600

@@ -1,0 +1,10 @@
+[Unit]
+Description=Controllo giornaliero aggiornamenti Claude Desktop
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
